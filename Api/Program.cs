@@ -1,127 +1,21 @@
-using System.Text;
+using Api.Configuration;
 using Api.Endpoints;
-using FluentValidation;
-using Infrastructure.Persistence;
-using Infrastructure.Services;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
-using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddProblemDetails(options =>
-{
-    options.CustomizeProblemDetails = context =>
-    {
-        context.ProblemDetails.Extensions["traceId"] = context.HttpContext.TraceIdentifier;
-    };
-});
-builder.Services.AddSwaggerGen(options =>
-{
-    options.SwaggerDoc("v1", new OpenApiInfo
-    {
-        Title = "ILocks.Qr API",
-        Version = "v1",
-        Description = "Backend API for OTP login, QR generation/history, and Telegram delivery."
-    });
-
-    var bearerScheme = new OpenApiSecurityScheme
-    {
-        Name = "Authorization",
-        Description = "JWT Bearer token. Example: Bearer {token}",
-        In = ParameterLocation.Header,
-        Type = SecuritySchemeType.Http,
-        Scheme = "bearer",
-        BearerFormat = "JWT",
-        Reference = new OpenApiReference
-        {
-            Type = ReferenceType.SecurityScheme,
-            Id = "Bearer"
-        }
-    };
-
-    options.AddSecurityDefinition("Bearer", bearerScheme);
-    options.AddSecurityRequirement(new OpenApiSecurityRequirement
-    {
-        {
-            bearerScheme,
-            Array.Empty<string>()
-        }
-    });
-});
-builder.Services.AddValidatorsFromAssemblyContaining<Program>();
-
-var connectionString = builder.Configuration.GetConnectionString("Default");
-if (string.IsNullOrWhiteSpace(connectionString))
-{
-    throw new InvalidOperationException("ConnectionStrings:Default is not configured.");
-}
-
-var jwtIssuer = builder.Configuration["Jwt:Issuer"];
-var jwtAudience = builder.Configuration["Jwt:Audience"];
-var jwtKey = builder.Configuration["Jwt:Key"];
-var telegramBotToken = builder.Configuration["Telegram:BotToken"];
-
-if (string.IsNullOrWhiteSpace(jwtIssuer) || string.IsNullOrWhiteSpace(jwtAudience) || string.IsNullOrWhiteSpace(jwtKey))
-{
-    throw new InvalidOperationException("Jwt settings are not configured.");
-}
-
-if (jwtKey.Length < 32)
-{
-    throw new InvalidOperationException("Jwt:Key must contain at least 32 characters.");
-}
-
-if (telegramBotToken is null)
-{
-    throw new InvalidOperationException("Telegram:BotToken key is not configured.");
-}
-
-builder.Services.AddDbContext<AppDbContext>(options =>
-{
-    options.UseNpgsql(connectionString);
-});
-builder.Services.AddSingleton<IQrCodeService, QrCodeService>();
-builder.Services.AddSingleton<ITelegramQrSender, TelegramQrSender>();
-
-var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
+var runtimeSettings = builder.Configuration.GetApiRuntimeSettings();
+var signingKey = runtimeSettings.CreateJwtSigningKey();
 
 builder.Services
-    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.RequireHttpsMetadata = false;
-        options.SaveToken = true;
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuerSigningKey = true,
-            IssuerSigningKey = signingKey,
-            ValidateIssuer = true,
-            ValidIssuer = jwtIssuer,
-            ValidateAudience = true,
-            ValidAudience = jwtAudience,
-            ValidateLifetime = true,
-            ClockSkew = TimeSpan.Zero
-        };
-    });
-
-builder.Services.AddAuthorization();
+    .AddApiFoundation()
+    .AddApiInfrastructure(runtimeSettings)
+    .AddApiAuthentication(runtimeSettings, signingKey);
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+app.UseApiPipeline();
 
-app.UseExceptionHandler();
-app.UseAuthentication();
-app.UseAuthorization();
-
-app.MapAuthEndpoints(jwtIssuer, jwtAudience, signingKey);
+app.MapAuthEndpoints(runtimeSettings.JwtIssuer, runtimeSettings.JwtAudience, signingKey);
 app.MapTelegramEndpoints();
 app.MapQrEndpoints();
 app.MapHealthEndpoints();
