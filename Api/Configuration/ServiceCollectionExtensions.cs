@@ -1,4 +1,5 @@
 using System.Text;
+using Application.Security;
 using FluentValidation;
 using Infrastructure.Persistence;
 using Infrastructure.Services;
@@ -11,6 +12,8 @@ namespace Api.Configuration;
 
 internal static class ServiceCollectionExtensions
 {
+    private const int AccessTokenExpiresInHours = 12;
+
     public static IServiceCollection AddApiFoundation(this IServiceCollection services)
     {
         services.AddEndpointsApiExplorer();
@@ -67,6 +70,7 @@ internal static class ServiceCollectionExtensions
         {
             options.UseNpgsql(settings.ConnectionString);
         });
+        services.AddSingleton<IOtpService, OtpService>();
         services.AddSingleton<IQrCodeService, QrCodeService>();
         services.AddSingleton<ITelegramQrSender, TelegramQrSender>();
 
@@ -96,6 +100,13 @@ internal static class ServiceCollectionExtensions
                     ClockSkew = TimeSpan.Zero
                 };
             });
+
+        services.AddSingleton<IJwtTokenService>(_ =>
+            new JwtTokenService(
+                settings.JwtIssuer,
+                settings.JwtAudience,
+                signingKey,
+                TimeSpan.FromHours(AccessTokenExpiresInHours)));
 
         services.AddAuthorization();
         return services;

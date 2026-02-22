@@ -1,11 +1,7 @@
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using System.Security.Cryptography;
-using System.Text;
+using Application.Security;
 using Domain.Entities;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 
 namespace Api.Endpoints;
 
@@ -14,13 +10,8 @@ internal static class AuthEndpoints
     private const int OtpCodeLength = 6;
     private const int OtpExpiresInMinutes = 5;
     private const int OtpMaxVerifyAttempts = 5;
-    private const int AccessTokenExpiresInHours = 12;
 
-    public static RouteGroupBuilder MapAuthEndpoints(
-        this IEndpointRouteBuilder app,
-        string jwtIssuer,
-        string jwtAudience,
-        SymmetricSecurityKey signingKey)
+    public static RouteGroupBuilder MapAuthEndpoints(this IEndpointRouteBuilder app)
     {
         var authGroup = app.MapGroup("/api/auth")
             .WithTags("Auth");
@@ -28,11 +19,12 @@ internal static class AuthEndpoints
         authGroup.MapPost("/request-otp", async (
             RequestOtpRequest request,
             AppDbContext db,
+            IOtpService otpService,
             IWebHostEnvironment environment,
             CancellationToken ct) =>
         {
-            var normalizedPhone = NormalizePhone(request.PhoneNumber);
-            if (!IsPhoneValid(normalizedPhone))
+            var normalizedPhone = otpService.NormalizePhone(request.PhoneNumber);
+            if (!otpService.IsPhoneValid(normalizedPhone))
             {
                 return Results.ValidationProblem(new Dictionary<string, string[]>
                 {
@@ -52,13 +44,13 @@ internal static class AuthEndpoints
                 activeCode.IsUsed = true;
             }
 
-            var otpCode = GenerateOtpCode(OtpCodeLength);
+            var otpCode = otpService.GenerateOtpCode(OtpCodeLength);
 
             var otp = new OtpCode
             {
                 Id = Guid.NewGuid(),
                 PhoneNumber = normalizedPhone,
-                CodeHash = ComputeSha256Hex(otpCode),
+                CodeHash = otpService.ComputeSha256Hex(otpCode),
                 ExpiresAt = now.AddMinutes(OtpExpiresInMinutes),
                 FailedAttempts = 0,
                 IsUsed = false,
@@ -85,10 +77,12 @@ internal static class AuthEndpoints
         authGroup.MapPost("/confirm-otp", async (
             ConfirmOtpRequest request,
             AppDbContext db,
+            IOtpService otpService,
+            IJwtTokenService jwtTokenService,
             CancellationToken ct) =>
         {
-            var normalizedPhone = NormalizePhone(request.PhoneNumber);
-            if (!IsPhoneValid(normalizedPhone))
+            var normalizedPhone = otpService.NormalizePhone(request.PhoneNumber);
+            if (!otpService.IsPhoneValid(normalizedPhone))
             {
                 return Results.ValidationProblem(new Dictionary<string, string[]>
                 {
@@ -139,7 +133,7 @@ internal static class AuthEndpoints
                     statusCode: StatusCodes.Status429TooManyRequests);
             }
 
-            if (!VerifySha256Hex(request.Code, otp.CodeHash))
+            if (!otpService.VerifySha256Hex(request.Code, otp.CodeHash))
             {
                 otp.FailedAttempts += 1;
 
@@ -180,13 +174,7 @@ internal static class AuthEndpoints
                 db.Users.Add(user);
             }
 
-            var tokenData = CreateAccessToken(
-                user.Id,
-                normalizedPhone,
-                jwtIssuer,
-                jwtAudience,
-                signingKey,
-                TimeSpan.FromHours(AccessTokenExpiresInHours));
+            var tokenData = jwtTokenService.CreateAccessToken(user.Id, normalizedPhone);
 
             await db.SaveChangesAsync(ct);
 
@@ -207,85 +195,4 @@ internal static class AuthEndpoints
 
         return authGroup;
     }
-
-    private static string NormalizePhone(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        var digits = value.Where(char.IsDigit).ToArray();
-        return new string(digits);
-    }
-
-    private static bool IsPhoneValid(string phone)
-    {
-        return phone.Length is >= 10 and <= 15;
-    }
-
-    private static string GenerateOtpCode(int length)
-    {
-        var min = (int)Math.Pow(10, length - 1);
-        var max = (int)Math.Pow(10, length);
-        return RandomNumberGenerator.GetInt32(min, max).ToString();
-    }
-
-    private static string ComputeSha256Hex(string value)
-    {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
-        return Convert.ToHexString(bytes);
-    }
-
-    private static bool VerifySha256Hex(string value, string expectedHexHash)
-    {
-        var currentHash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
-        byte[] expectedHash;
-
-        try
-        {
-            expectedHash = Convert.FromHexString(expectedHexHash);
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
-
-        return CryptographicOperations.FixedTimeEquals(currentHash, expectedHash);
-    }
-
-    private static AccessTokenData CreateAccessToken(
-        Guid userId,
-        string phoneNumber,
-        string issuer,
-        string audience,
-        SymmetricSecurityKey signingKey,
-        TimeSpan lifetime)
-    {
-        var now = DateTime.UtcNow;
-        var expiresAtUtc = now.Add(lifetime);
-
-        var claims = new List<Claim>
-        {
-            new(JwtRegisteredClaimNames.Sub, userId.ToString()),
-            new(ClaimTypes.NameIdentifier, userId.ToString()),
-            new(ClaimTypes.MobilePhone, phoneNumber),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-        };
-
-        var credentials = new SigningCredentials(signingKey, SecurityAlgorithms.HmacSha256);
-        var token = new JwtSecurityToken(
-            issuer: issuer,
-            audience: audience,
-            claims: claims,
-            notBefore: now,
-            expires: expiresAtUtc,
-            signingCredentials: credentials);
-
-        return new AccessTokenData(
-            new JwtSecurityTokenHandler().WriteToken(token),
-            new DateTimeOffset(expiresAtUtc, TimeSpan.Zero));
-    }
-
-    private sealed record AccessTokenData(string AccessToken, DateTimeOffset ExpiresAtUtc);
 }

@@ -15,7 +15,7 @@ var app = builder.Build();
 
 app.UseApiPipeline();
 
-app.MapAuthEndpoints(runtimeSettings.JwtIssuer, runtimeSettings.JwtAudience, signingKey);
+app.MapAuthEndpoints();
 app.MapTelegramEndpoints();
 app.MapQrEndpoints();
 app.MapHealthEndpoints();
