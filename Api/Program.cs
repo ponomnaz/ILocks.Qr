@@ -15,10 +15,17 @@ if (string.IsNullOrWhiteSpace(connectionString))
 var jwtIssuer = builder.Configuration["Jwt:Issuer"];
 var jwtAudience = builder.Configuration["Jwt:Audience"];
 var jwtKey = builder.Configuration["Jwt:Key"];
+var telegramBotToken = builder.Configuration["Telegram:BotToken"];
 
 if (string.IsNullOrWhiteSpace(jwtIssuer) || string.IsNullOrWhiteSpace(jwtAudience) || string.IsNullOrWhiteSpace(jwtKey))
 {
     throw new InvalidOperationException("Jwt settings are not configured.");
+}
+
+// Token can be empty during early local setup, but config key must exist.
+if (telegramBotToken is null)
+{
+    throw new InvalidOperationException("Telegram:BotToken key is not configured.");
 }
 
 var app = builder.Build();
