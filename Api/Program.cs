@@ -2,9 +2,11 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Domain.Entities;
 using FluentValidation;
 using Infrastructure.Persistence;
+using Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -50,6 +52,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 {
     options.UseNpgsql(connectionString);
 });
+builder.Services.AddSingleton<IQrCodeService, QrCodeService>();
 
 var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
 
@@ -255,6 +258,82 @@ authGroup.MapPost("/confirm-otp", async (
         normalizedPhone));
 });
 
+var qrGroup = app.MapGroup("/api/qr")
+    .RequireAuthorization();
+
+qrGroup.MapPost("", async (
+    CreateQrRequest request,
+    ClaimsPrincipal principal,
+    AppDbContext db,
+    IQrCodeService qrCodeService,
+    IValidator<CreateQrRequest> validator,
+    CancellationToken ct) =>
+{
+    var validationResult = await validator.ValidateAsync(request, ct);
+    if (!validationResult.IsValid)
+    {
+        return Results.ValidationProblem(validationResult.ToDictionary());
+    }
+
+    if (!TryGetUserId(principal, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, ct);
+    if (user is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var now = DateTimeOffset.UtcNow;
+    var dataType = string.IsNullOrWhiteSpace(request.DataType)
+        ? "booking_access"
+        : request.DataType.Trim();
+
+    var payloadObject = new
+    {
+        checkInAt = request.CheckInAt,
+        checkOutAt = request.CheckOutAt,
+        guestsCount = request.GuestsCount,
+        doorPassword = request.DoorPassword,
+        userId = user.Id,
+        phoneNumber = user.PhoneNumber,
+        dataType,
+        createdAt = now
+    };
+
+    var payloadJson = JsonSerializer.Serialize(payloadObject);
+    var qrImageBase64 = qrCodeService.GeneratePngBase64(payloadJson);
+
+    var record = new QrCodeRecord
+    {
+        Id = Guid.NewGuid(),
+        UserId = user.Id,
+        CheckInAt = request.CheckInAt,
+        CheckOutAt = request.CheckOutAt,
+        GuestsCount = request.GuestsCount,
+        DoorPassword = request.DoorPassword.Trim(),
+        PayloadJson = payloadJson,
+        QrImageBase64 = qrImageBase64,
+        DataType = dataType,
+        CreatedAt = now
+    };
+
+    db.QrCodeRecords.Add(record);
+    await db.SaveChangesAsync(ct);
+
+    return Results.Ok(new CreateQrResponse(
+        record.Id,
+        record.CheckInAt,
+        record.CheckOutAt,
+        record.GuestsCount,
+        record.DataType,
+        record.CreatedAt,
+        record.PayloadJson,
+        record.QrImageBase64));
+});
+
 app.MapGet("/health", () => Results.Ok(new
 {
     status = "ok",
@@ -310,6 +389,14 @@ static bool VerifySha256Hex(string value, string expectedHexHash)
     return CryptographicOperations.FixedTimeEquals(currentHash, expectedHash);
 }
 
+static bool TryGetUserId(ClaimsPrincipal principal, out Guid userId)
+{
+    var userIdRaw = principal.FindFirstValue(ClaimTypes.NameIdentifier)
+                    ?? principal.FindFirstValue(JwtRegisteredClaimNames.Sub);
+
+    return Guid.TryParse(userIdRaw, out userId);
+}
+
 static AccessTokenData CreateAccessToken(
     Guid userId,
     string phoneNumber,
@@ -347,6 +434,16 @@ public sealed record RequestOtpRequest(string PhoneNumber);
 public sealed record RequestOtpResponse(string PhoneNumber, DateTimeOffset ExpiresAtUtc, int MaxVerifyAttempts, string? DebugCode);
 public sealed record ConfirmOtpRequest(string PhoneNumber, string Code);
 public sealed record ConfirmOtpResponse(string AccessToken, DateTimeOffset ExpiresAtUtc, string TokenType, Guid UserId, string PhoneNumber);
+public sealed record CreateQrRequest(DateTimeOffset CheckInAt, DateTimeOffset CheckOutAt, int GuestsCount, string DoorPassword, string DataType);
+public sealed record CreateQrResponse(
+    Guid Id,
+    DateTimeOffset CheckInAt,
+    DateTimeOffset CheckOutAt,
+    int GuestsCount,
+    string DataType,
+    DateTimeOffset CreatedAt,
+    string PayloadJson,
+    string QrImageBase64);
 public sealed record ErrorResponse(string ErrorCode, string Message);
 public sealed record ConfirmOtpErrorResponse(string ErrorCode, int RemainingAttempts, string Message);
 file sealed record AccessTokenData(string AccessToken, DateTimeOffset ExpiresAtUtc);
