@@ -334,6 +334,79 @@ qrGroup.MapPost("", async (
         record.QrImageBase64));
 });
 
+qrGroup.MapGet("", async (
+    ClaimsPrincipal principal,
+    AppDbContext db,
+    int? skip,
+    int? take,
+    CancellationToken ct) =>
+{
+    if (!TryGetUserId(principal, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var resolvedSkip = Math.Max(0, skip ?? 0);
+    var resolvedTake = Math.Clamp(take ?? 20, 1, 100);
+
+    var userRecordsQuery = db.QrCodeRecords
+        .AsNoTracking()
+        .Where(x => x.UserId == userId);
+
+    var total = await userRecordsQuery.CountAsync(ct);
+
+    var items = await userRecordsQuery
+        .OrderByDescending(x => x.CreatedAt)
+        .Skip(resolvedSkip)
+        .Take(resolvedTake)
+        .Select(x => new QrCodeListItemResponse(
+            x.Id,
+            x.CheckInAt,
+            x.CheckOutAt,
+            x.GuestsCount,
+            x.DataType,
+            x.CreatedAt))
+        .ToListAsync(ct);
+
+    return Results.Ok(new QrCodeHistoryResponse(items, total, resolvedSkip, resolvedTake));
+});
+
+qrGroup.MapGet("/{id:guid}", async (
+    Guid id,
+    ClaimsPrincipal principal,
+    AppDbContext db,
+    CancellationToken ct) =>
+{
+    if (!TryGetUserId(principal, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var record = await db.QrCodeRecords
+        .AsNoTracking()
+        .Where(x => x.Id == id && x.UserId == userId)
+        .Select(x => new QrCodeDetailsResponse(
+            x.Id,
+            x.CheckInAt,
+            x.CheckOutAt,
+            x.GuestsCount,
+            x.DoorPassword,
+            x.DataType,
+            x.CreatedAt,
+            x.PayloadJson,
+            x.QrImageBase64))
+        .SingleOrDefaultAsync(ct);
+
+    if (record is null)
+    {
+        return Results.NotFound(new ErrorResponse(
+            "qr_not_found",
+            "QR record not found."));
+    }
+
+    return Results.Ok(record);
+});
+
 app.MapGet("/health", () => Results.Ok(new
 {
     status = "ok",
@@ -440,6 +513,28 @@ public sealed record CreateQrResponse(
     DateTimeOffset CheckInAt,
     DateTimeOffset CheckOutAt,
     int GuestsCount,
+    string DataType,
+    DateTimeOffset CreatedAt,
+    string PayloadJson,
+    string QrImageBase64);
+public sealed record QrCodeListItemResponse(
+    Guid Id,
+    DateTimeOffset CheckInAt,
+    DateTimeOffset CheckOutAt,
+    int GuestsCount,
+    string DataType,
+    DateTimeOffset CreatedAt);
+public sealed record QrCodeHistoryResponse(
+    IReadOnlyList<QrCodeListItemResponse> Items,
+    int Total,
+    int Skip,
+    int Take);
+public sealed record QrCodeDetailsResponse(
+    Guid Id,
+    DateTimeOffset CheckInAt,
+    DateTimeOffset CheckOutAt,
+    int GuestsCount,
+    string DoorPassword,
     string DataType,
     DateTimeOffset CreatedAt,
     string PayloadJson,
