@@ -53,6 +53,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString);
 });
 builder.Services.AddSingleton<IQrCodeService, QrCodeService>();
+builder.Services.AddSingleton<ITelegramQrSender, TelegramQrSender>();
 
 var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
 
@@ -258,6 +259,76 @@ authGroup.MapPost("/confirm-otp", async (
         normalizedPhone));
 });
 
+var telegramGroup = app.MapGroup("/api/telegram")
+    .RequireAuthorization();
+
+telegramGroup.MapPost("/bind-chat", async (
+    BindTelegramChatRequest request,
+    ClaimsPrincipal principal,
+    AppDbContext db,
+    CancellationToken ct) =>
+{
+    if (request.ChatId <= 0)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["chatId"] = ["ChatId must be greater than zero."]
+        });
+    }
+
+    if (!TryGetUserId(principal, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var userExists = await db.Users.AnyAsync(x => x.Id == userId, ct);
+    if (!userExists)
+    {
+        return Results.Unauthorized();
+    }
+
+    var existingByChat = await db.TelegramBindings
+        .AsNoTracking()
+        .FirstOrDefaultAsync(x => x.ChatId == request.ChatId, ct);
+
+    if (existingByChat is not null && existingByChat.UserId != userId)
+    {
+        return Results.Conflict(new ErrorResponse(
+            "telegram_chat_already_bound",
+            "This Telegram chat is already linked to another user."));
+    }
+
+    var now = DateTimeOffset.UtcNow;
+
+    var binding = await db.TelegramBindings
+        .FirstOrDefaultAsync(x => x.UserId == userId, ct);
+
+    if (binding is null)
+    {
+        binding = new TelegramBinding
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            ChatId = request.ChatId,
+            CreatedAt = now
+        };
+
+        db.TelegramBindings.Add(binding);
+    }
+    else
+    {
+        binding.ChatId = request.ChatId;
+        binding.CreatedAt = now;
+    }
+
+    await db.SaveChangesAsync(ct);
+
+    return Results.Ok(new BindTelegramChatResponse(
+        binding.UserId,
+        binding.ChatId,
+        binding.CreatedAt));
+});
+
 var qrGroup = app.MapGroup("/api/qr")
     .RequireAuthorization();
 
@@ -407,6 +478,100 @@ qrGroup.MapGet("/{id:guid}", async (
     return Results.Ok(record);
 });
 
+qrGroup.MapPost("/{id:guid}/send-telegram", async (
+    Guid id,
+    ClaimsPrincipal principal,
+    AppDbContext db,
+    ITelegramQrSender telegramQrSender,
+    CancellationToken ct) =>
+{
+    if (!TryGetUserId(principal, out var userId))
+    {
+        return Results.Unauthorized();
+    }
+
+    var record = await db.QrCodeRecords
+        .AsNoTracking()
+        .FirstOrDefaultAsync(x => x.Id == id && x.UserId == userId, ct);
+
+    if (record is null)
+    {
+        return Results.NotFound(new ErrorResponse(
+            "qr_not_found",
+            "QR record not found."));
+    }
+
+    var binding = await db.TelegramBindings
+        .AsNoTracking()
+        .FirstOrDefaultAsync(x => x.UserId == userId, ct);
+
+    if (binding is null)
+    {
+        return Results.BadRequest(new ErrorResponse(
+            "telegram_not_bound",
+            "Telegram chat is not bound for this user."));
+    }
+
+    var caption = $"QR access ({record.DataType}) | {record.CheckInAt:O} - {record.CheckOutAt:O}";
+
+    try
+    {
+        await telegramQrSender.SendQrCodeAsync(binding.ChatId, record.QrImageBase64, caption, ct);
+    }
+    catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.Configuration)
+    {
+        return Results.Problem(
+            title: "Telegram is not configured",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.InvalidChat)
+    {
+        return Results.BadRequest(new ErrorResponse("telegram_invalid_chat", ex.Message));
+    }
+    catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.Forbidden)
+    {
+        return Results.Problem(
+            title: "Telegram access denied",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status403Forbidden);
+    }
+    catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.Timeout)
+    {
+        return Results.Problem(
+            title: "Telegram timeout",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status504GatewayTimeout);
+    }
+    catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.Network)
+    {
+        return Results.Problem(
+            title: "Telegram network failure",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.InvalidPayload)
+    {
+        return Results.Problem(
+            title: "Stored QR payload is invalid",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
+    catch (TelegramIntegrationException ex)
+    {
+        return Results.Problem(
+            title: "Telegram API error",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+
+    return Results.Ok(new SendQrToTelegramResponse(
+        record.Id,
+        binding.ChatId,
+        DateTimeOffset.UtcNow,
+        "sent"));
+});
+
 app.MapGet("/health", () => Results.Ok(new
 {
     status = "ok",
@@ -539,6 +704,9 @@ public sealed record QrCodeDetailsResponse(
     DateTimeOffset CreatedAt,
     string PayloadJson,
     string QrImageBase64);
+public sealed record BindTelegramChatRequest(long ChatId);
+public sealed record BindTelegramChatResponse(Guid UserId, long ChatId, DateTimeOffset BoundAtUtc);
+public sealed record SendQrToTelegramResponse(Guid QrId, long ChatId, DateTimeOffset SentAtUtc, string Status);
 public sealed record ErrorResponse(string ErrorCode, string Message);
 public sealed record ConfirmOtpErrorResponse(string ErrorCode, int RemainingAttempts, string Message);
 file sealed record AccessTokenData(string AccessToken, DateTimeOffset ExpiresAtUtc);
