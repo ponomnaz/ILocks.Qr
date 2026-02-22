@@ -1,4 +1,6 @@
 using Application.Security;
+using Api.Contracts.Auth;
+using Api.Contracts.Common;
 using Domain.Entities;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;

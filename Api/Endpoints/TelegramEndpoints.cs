@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using Api.Contracts.Common;
+using Api.Contracts.Telegram;
 using Domain.Entities;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;

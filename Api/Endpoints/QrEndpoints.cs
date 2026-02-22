@@ -1,5 +1,8 @@
 using System.Security.Claims;
 using System.Text.Json;
+using Api.Contracts.Common;
+using Api.Contracts.Qr;
+using Api.Contracts.Telegram;
 using Domain.Entities;
 using FluentValidation;
 using Infrastructure.Persistence;
