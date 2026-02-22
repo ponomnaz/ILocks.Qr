@@ -1,7 +1,7 @@
 using FluentAssertions;
 using Infrastructure.Services;
 
-namespace UnitTests.Auth;
+namespace UnitTests.Infrastructure.Services;
 
 public sealed class OtpServiceTests
 {

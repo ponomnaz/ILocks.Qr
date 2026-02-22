@@ -3,7 +3,7 @@ using Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace UnitTests.Telegram;
+namespace UnitTests.Infrastructure.Services;
 
 public sealed class TelegramQrSenderTests
 {

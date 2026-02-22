@@ -2,7 +2,7 @@ using Api.Contracts.Qr;
 using Api.Validation;
 using FluentAssertions;
 
-namespace UnitTests.Qr;
+namespace UnitTests.Api.Validation;
 
 public sealed class CreateQrRequestValidatorTests
 {

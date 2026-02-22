@@ -4,7 +4,7 @@ using FluentAssertions;
 using Infrastructure.Services;
 using UnitTests.Common;
 
-namespace UnitTests.Auth;
+namespace UnitTests.Infrastructure.Services;
 
 public sealed class JwtTokenServiceTests
 {
