@@ -23,6 +23,10 @@ public sealed class OtpCodeConfiguration : IEntityTypeConfiguration<OtpCode>
         builder.Property(x => x.ExpiresAt)
             .IsRequired();
 
+        builder.Property(x => x.FailedAttempts)
+            .IsRequired()
+            .HasDefaultValue(0);
+
         builder.Property(x => x.IsUsed)
             .IsRequired();
 

@@ -6,6 +6,7 @@ public sealed class OtpCode
     public string PhoneNumber { get; set; } = string.Empty;
     public string CodeHash { get; set; } = string.Empty;
     public DateTimeOffset ExpiresAt { get; set; }
+    public int FailedAttempts { get; set; }
     public bool IsUsed { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 }
