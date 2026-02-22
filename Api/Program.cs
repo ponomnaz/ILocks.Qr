@@ -10,6 +10,7 @@ using Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
 
 const int OtpCodeLength = 6;
 const int OtpExpiresInMinutes = 5;
@@ -19,7 +20,46 @@ const int AccessTokenExpiresInHours = 12;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddProblemDetails(options =>
+{
+    options.CustomizeProblemDetails = context =>
+    {
+        context.ProblemDetails.Extensions["traceId"] = context.HttpContext.TraceIdentifier;
+    };
+});
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "ILocks.Qr API",
+        Version = "v1",
+        Description = "Backend API for OTP login, QR generation/history, and Telegram delivery."
+    });
+
+    var bearerScheme = new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Description = "JWT Bearer token. Example: Bearer {token}",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        Reference = new OpenApiReference
+        {
+            Type = ReferenceType.SecurityScheme,
+            Id = "Bearer"
+        }
+    };
+
+    options.AddSecurityDefinition("Bearer", bearerScheme);
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            bearerScheme,
+            Array.Empty<string>()
+        }
+    });
+});
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 
 var connectionString = builder.Configuration.GetConnectionString("Default");
@@ -86,10 +126,12 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseExceptionHandler();
 app.UseAuthentication();
 app.UseAuthorization();
 
-var authGroup = app.MapGroup("/api/auth");
+var authGroup = app.MapGroup("/api/auth")
+    .WithTags("Auth");
 
 authGroup.MapPost("/request-otp", async (
     RequestOtpRequest request,
@@ -141,7 +183,12 @@ authGroup.MapPost("/request-otp", async (
         environment.IsDevelopment() ? otpCode : null);
 
     return Results.Ok(response);
-});
+})
+    .WithName("RequestOtp")
+    .WithSummary("Request OTP by phone")
+    .WithDescription("Creates a one-time code for a phone number. In Development the response contains debugCode.")
+    .Produces<RequestOtpResponse>(StatusCodes.Status200OK)
+    .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
 authGroup.MapPost("/confirm-otp", async (
     ConfirmOtpRequest request,
@@ -257,9 +304,17 @@ authGroup.MapPost("/confirm-otp", async (
         "Bearer",
         user.Id,
         normalizedPhone));
-});
+})
+    .WithName("ConfirmOtp")
+    .WithSummary("Confirm OTP and issue JWT")
+    .WithDescription("Verifies OTP for phone number and returns JWT access token.")
+    .Produces<ConfirmOtpResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ConfirmOtpErrorResponse>(StatusCodes.Status400BadRequest)
+    .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
 var telegramGroup = app.MapGroup("/api/telegram")
+    .WithTags("Telegram")
     .RequireAuthorization();
 
 telegramGroup.MapPost("/bind-chat", async (
@@ -327,9 +382,17 @@ telegramGroup.MapPost("/bind-chat", async (
         binding.UserId,
         binding.ChatId,
         binding.CreatedAt));
-});
+})
+    .WithName("BindTelegramChat")
+    .WithSummary("Bind Telegram chat")
+    .WithDescription("Binds Telegram chatId to current user. One chat cannot be shared between users.")
+    .Produces<BindTelegramChatResponse>(StatusCodes.Status200OK)
+    .ProducesValidationProblem(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status409Conflict)
+    .Produces(StatusCodes.Status401Unauthorized);
 
 var qrGroup = app.MapGroup("/api/qr")
+    .WithTags("QR")
     .RequireAuthorization();
 
 qrGroup.MapPost("", async (
@@ -403,7 +466,13 @@ qrGroup.MapPost("", async (
         record.CreatedAt,
         record.PayloadJson,
         record.QrImageBase64));
-});
+})
+    .WithName("CreateQr")
+    .WithSummary("Generate and save QR")
+    .WithDescription("Generates PNG QR from booking payload and stores record in database for current user.")
+    .Produces<CreateQrResponse>(StatusCodes.Status200OK)
+    .ProducesValidationProblem(StatusCodes.Status400BadRequest)
+    .Produces(StatusCodes.Status401Unauthorized);
 
 qrGroup.MapGet("", async (
     ClaimsPrincipal principal,
@@ -440,7 +509,12 @@ qrGroup.MapGet("", async (
         .ToListAsync(ct);
 
     return Results.Ok(new QrCodeHistoryResponse(items, total, resolvedSkip, resolvedTake));
-});
+})
+    .WithName("GetQrHistory")
+    .WithSummary("Get QR history")
+    .WithDescription("Returns paged QR records for current user.")
+    .Produces<QrCodeHistoryResponse>(StatusCodes.Status200OK)
+    .Produces(StatusCodes.Status401Unauthorized);
 
 qrGroup.MapGet("/{id:guid}", async (
     Guid id,
@@ -476,7 +550,13 @@ qrGroup.MapGet("/{id:guid}", async (
     }
 
     return Results.Ok(record);
-});
+})
+    .WithName("GetQrById")
+    .WithSummary("Get QR details by id")
+    .WithDescription("Returns single QR record for current user.")
+    .Produces<QrCodeDetailsResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status404NotFound)
+    .Produces(StatusCodes.Status401Unauthorized);
 
 qrGroup.MapPost("/{id:guid}/send-telegram", async (
     Guid id,
@@ -570,14 +650,31 @@ qrGroup.MapPost("/{id:guid}/send-telegram", async (
         binding.ChatId,
         DateTimeOffset.UtcNow,
         "sent"));
-});
+})
+    .WithName("SendQrToTelegram")
+    .WithSummary("Send QR to Telegram")
+    .WithDescription("Sends stored QR PNG to bound Telegram chat for current user.")
+    .Produces<SendQrToTelegramResponse>(StatusCodes.Status200OK)
+    .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+    .Produces<ErrorResponse>(StatusCodes.Status404NotFound)
+    .Produces(StatusCodes.Status401Unauthorized)
+    .ProducesProblem(StatusCodes.Status403Forbidden)
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
+    .ProducesProblem(StatusCodes.Status502BadGateway)
+    .ProducesProblem(StatusCodes.Status503ServiceUnavailable)
+    .ProducesProblem(StatusCodes.Status504GatewayTimeout);
 
 app.MapGet("/health", () => Results.Ok(new
 {
     status = "ok",
     service = "ILocks.Qr.Api",
     environment = app.Environment.EnvironmentName
-})).WithName("Health").WithOpenApi();
+}))
+    .WithName("Health")
+    .WithSummary("Health check")
+    .WithDescription("Basic API health endpoint.")
+    .Produces(StatusCodes.Status200OK)
+    .WithOpenApi();
 
 app.Run();
 
