@@ -1,95 +1,118 @@
 using Api.Contracts.Qr;
 using Api.Validation;
-using FluentAssertions;
+using FluentValidation.TestHelper;
 
 namespace UnitTests.Api.Validation;
 
 public sealed class CreateQrRequestValidatorTests
 {
-    private readonly CreateQrRequestValidator _validator = new();
+    private readonly CreateQrRequestValidator _sut = new();
 
     [Fact]
-    public void Validate_ValidRequest_ReturnsValidResult()
+    public void Validate_ValidModel_Passes()
     {
-        var request = BuildValidRequest();
+        var model = CreateValidModel();
 
-        var result = _validator.Validate(request);
+        var result = _sut.TestValidate(model);
 
-        result.IsValid.Should().BeTrue();
+        result.ShouldNotHaveAnyValidationErrors();
     }
 
     [Fact]
-    public void Validate_CheckInAfterCheckOut_ReturnsErrorForCheckInAt()
+    public void Validate_CheckInAfterOrEqualCheckOut_Fails()
     {
-        var request = BuildValidRequest() with
-        {
-            CheckInAt = DateTimeOffset.UtcNow.AddHours(2),
-            CheckOutAt = DateTimeOffset.UtcNow.AddHours(1)
-        };
+        var now = DateTimeOffset.UtcNow.AddHours(2);
+        var model = new CreateQrRequest(
+            now,
+            now,
+            2,
+            "1234",
+            "booking_access");
 
-        var result = _validator.Validate(request);
+        var result = _sut.TestValidate(model);
 
-        result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(x => x.PropertyName == nameof(CreateQrRequest.CheckInAt));
+        result.ShouldHaveValidationErrorFor(x => x.CheckInAt);
     }
 
     [Fact]
-    public void Validate_CheckOutInPast_ReturnsErrorForCheckOutAt()
+    public void Validate_CheckOutNotInFuture_Fails()
     {
-        var request = BuildValidRequest() with
-        {
-            CheckInAt = DateTimeOffset.UtcNow.AddHours(-2),
-            CheckOutAt = DateTimeOffset.UtcNow.AddHours(-1)
-        };
+        var model = new CreateQrRequest(
+            DateTimeOffset.UtcNow.AddHours(-2),
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            2,
+            "1234",
+            "booking_access");
 
-        var result = _validator.Validate(request);
+        var result = _sut.TestValidate(model);
 
-        result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(x => x.PropertyName == nameof(CreateQrRequest.CheckOutAt));
+        result.ShouldHaveValidationErrorFor(x => x.CheckOutAt);
     }
 
     [Theory]
     [InlineData(0)]
     [InlineData(51)]
-    public void Validate_GuestsCountOutOfRange_ReturnsErrorForGuestsCount(int guestsCount)
+    public void Validate_GuestsCountOutOfRange_Fails(int guestsCount)
     {
-        var request = BuildValidRequest() with { GuestsCount = guestsCount };
+        var validModel = CreateValidModel();
+        var model = validModel with { GuestsCount = guestsCount };
 
-        var result = _validator.Validate(request);
+        var result = _sut.TestValidate(model);
 
-        result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(x => x.PropertyName == nameof(CreateQrRequest.GuestsCount));
+        result.ShouldHaveValidationErrorFor(x => x.GuestsCount);
     }
 
     [Fact]
-    public void Validate_EmptyDoorPassword_ReturnsErrorForDoorPassword()
+    public void Validate_DoorPasswordEmpty_Fails()
     {
-        var request = BuildValidRequest() with { DoorPassword = string.Empty };
+        var validModel = CreateValidModel();
+        var model = validModel with { DoorPassword = string.Empty };
 
-        var result = _validator.Validate(request);
+        var result = _sut.TestValidate(model);
 
-        result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(x => x.PropertyName == nameof(CreateQrRequest.DoorPassword));
+        result.ShouldHaveValidationErrorFor(x => x.DoorPassword);
     }
 
     [Fact]
-    public void Validate_EmptyDataType_ReturnsErrorForDataType()
+    public void Validate_DoorPasswordTooLong_Fails()
     {
-        var request = BuildValidRequest() with { DataType = string.Empty };
+        var validModel = CreateValidModel();
+        var model = validModel with { DoorPassword = new string('a', 129) };
 
-        var result = _validator.Validate(request);
+        var result = _sut.TestValidate(model);
 
-        result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(x => x.PropertyName == nameof(CreateQrRequest.DataType));
+        result.ShouldHaveValidationErrorFor(x => x.DoorPassword);
     }
 
-    private static CreateQrRequest BuildValidRequest()
+    [Fact]
+    public void Validate_DataTypeEmpty_Fails()
+    {
+        var validModel = CreateValidModel();
+        var model = validModel with { DataType = string.Empty };
+
+        var result = _sut.TestValidate(model);
+
+        result.ShouldHaveValidationErrorFor(x => x.DataType);
+    }
+
+    [Fact]
+    public void Validate_DataTypeTooLong_Fails()
+    {
+        var validModel = CreateValidModel();
+        var model = validModel with { DataType = new string('a', 65) };
+
+        var result = _sut.TestValidate(model);
+
+        result.ShouldHaveValidationErrorFor(x => x.DataType);
+    }
+
+    private static CreateQrRequest CreateValidModel()
     {
         return new CreateQrRequest(
-            CheckInAt: DateTimeOffset.UtcNow.AddHours(1),
-            CheckOutAt: DateTimeOffset.UtcNow.AddHours(6),
-            GuestsCount: 2,
-            DoorPassword: "lock-pass-123",
-            DataType: "booking_access");
+            DateTimeOffset.UtcNow.AddHours(1),
+            DateTimeOffset.UtcNow.AddHours(2),
+            2,
+            "1234",
+            "booking_access");
     }
 }

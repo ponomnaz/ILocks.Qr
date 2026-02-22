@@ -8,33 +8,36 @@ namespace UnitTests.Infrastructure.Services;
 public sealed class TelegramQrSenderTests
 {
     [Fact]
-    public async Task SendQrCodeAsync_MissingBotToken_ThrowsConfigurationException()
+    public async Task SendQrCodeAsync_EmptyBotToken_ThrowsConfigurationError()
     {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>())
-            .Build();
-        var sender = new TelegramQrSender(configuration, NullLogger<TelegramQrSender>.Instance);
+        var sut = CreateSut(new Dictionary<string, string?>());
 
-        Func<Task> act = () => sender.SendQrCodeAsync(12345, "dGVzdA==", "caption", CancellationToken.None);
+        Func<Task> act = () => sut.SendQrCodeAsync(1, "AA==", "caption", CancellationToken.None);
 
         var exception = await act.Should().ThrowAsync<TelegramIntegrationException>();
         exception.Which.Error.Should().Be(TelegramIntegrationError.Configuration);
     }
 
     [Fact]
-    public async Task SendQrCodeAsync_InvalidBase64_ThrowsInvalidPayloadException()
+    public async Task SendQrCodeAsync_InvalidBase64_ThrowsInvalidPayloadError()
     {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Telegram:BotToken"] = "test-token"
-            })
-            .Build();
-        var sender = new TelegramQrSender(configuration, NullLogger<TelegramQrSender>.Instance);
+        var sut = CreateSut(new Dictionary<string, string?>
+        {
+            ["Telegram:BotToken"] = "test-token"
+        });
 
-        Func<Task> act = () => sender.SendQrCodeAsync(12345, "not-valid-base64", "caption", CancellationToken.None);
+        Func<Task> act = () => sut.SendQrCodeAsync(1, "not-base64", "caption", CancellationToken.None);
 
         var exception = await act.Should().ThrowAsync<TelegramIntegrationException>();
         exception.Which.Error.Should().Be(TelegramIntegrationError.InvalidPayload);
+    }
+
+    private static TelegramQrSender CreateSut(Dictionary<string, string?> values)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        return new TelegramQrSender(configuration, NullLogger<TelegramQrSender>.Instance);
     }
 }

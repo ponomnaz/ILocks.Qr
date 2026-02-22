@@ -5,57 +5,78 @@ namespace UnitTests.Infrastructure.Services;
 
 public sealed class OtpServiceTests
 {
-    private readonly OtpService _service = new();
+    private readonly OtpService _sut = new();
 
     [Fact]
-    public void NormalizePhone_InputWithSymbols_ReturnsDigitsOnly()
+    public void NormalizePhone_RemovesNonDigits()
     {
-        var normalized = _service.NormalizePhone("+7 (999) 123-45-67");
+        var result = _sut.NormalizePhone("+7 (999) 123-45-67 ext.89");
 
-        normalized.Should().Be("79991234567");
+        result.Should().Be("7999123456789");
     }
 
     [Theory]
-    [InlineData("1234567890", true)]
-    [InlineData("123456789012345", true)]
-    [InlineData("123456789", false)]
-    [InlineData("1234567890123456", false)]
-    public void IsPhoneValid_DifferentLengths_ReturnsExpectedResult(string normalizedPhone, bool expected)
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void NormalizePhone_EmptyInput_ReturnsEmpty(string? input)
     {
-        var result = _service.IsPhoneValid(normalizedPhone);
+        var result = _sut.NormalizePhone(input!);
 
-        result.Should().Be(expected);
+        result.Should().BeEmpty();
     }
 
     [Fact]
-    public void GenerateOtpCode_ValidLength_ReturnsDigitsWithRequestedLength()
+    public void IsPhoneValid_LengthLessThan10_ReturnsFalse()
     {
-        const int length = 6;
+        var result = _sut.IsPhoneValid("123456789");
 
-        var code = _service.GenerateOtpCode(length);
-
-        code.Should().HaveLength(length);
-        code.All(char.IsDigit).Should().BeTrue();
+        result.Should().BeFalse();
     }
 
-    [Fact]
-    public void VerifySha256Hex_CorrectCodeAndHash_ReturnsTrue()
+    [Theory]
+    [InlineData("1234567890")]
+    [InlineData("123456789012345")]
+    public void IsPhoneValid_Length10To15_ReturnsTrue(string phone)
     {
-        const string code = "123456";
-        var hash = _service.ComputeSha256Hex(code);
-
-        var result = _service.VerifySha256Hex(code, hash);
+        var result = _sut.IsPhoneValid(phone);
 
         result.Should().BeTrue();
     }
 
     [Fact]
-    public void VerifySha256Hex_WrongCode_ReturnsFalse()
+    public void IsPhoneValid_LengthGreaterThan15_ReturnsFalse()
     {
-        const string code = "123456";
-        var hash = _service.ComputeSha256Hex(code);
+        var result = _sut.IsPhoneValid("1234567890123456");
 
-        var result = _service.VerifySha256Hex("654321", hash);
+        result.Should().BeFalse();
+    }
+
+    [Fact]
+    public void GenerateOtpCode_ReturnsDigitsWithRequestedLength()
+    {
+        var result = _sut.GenerateOtpCode(6);
+
+        result.Should().HaveLength(6);
+        result.All(char.IsDigit).Should().BeTrue();
+    }
+
+    [Fact]
+    public void VerifySha256Hex_CorrectValue_ReturnsTrue()
+    {
+        var hash = _sut.ComputeSha256Hex("123456");
+
+        var result = _sut.VerifySha256Hex("123456", hash);
+
+        result.Should().BeTrue();
+    }
+
+    [Fact]
+    public void VerifySha256Hex_WrongValue_ReturnsFalse()
+    {
+        var hash = _sut.ComputeSha256Hex("123456");
+
+        var result = _sut.VerifySha256Hex("000000", hash);
 
         result.Should().BeFalse();
     }
@@ -63,7 +84,7 @@ public sealed class OtpServiceTests
     [Fact]
     public void VerifySha256Hex_InvalidHashFormat_ReturnsFalse()
     {
-        var result = _service.VerifySha256Hex("123456", "not-a-hex-value");
+        var result = _sut.VerifySha256Hex("123456", "not-a-hex-value");
 
         result.Should().BeFalse();
     }
