@@ -1,6 +1,8 @@
 using Api.Contracts.Qr;
 using FluentValidation;
 
+namespace Api.Validation;
+
 public sealed class CreateQrRequestValidator : AbstractValidator<CreateQrRequest>
 {
     public CreateQrRequestValidator()
