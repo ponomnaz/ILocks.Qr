@@ -1,0 +1,35 @@
+* text=auto eol=lf
+
+# Solution and scripts
+*.sln text eol=crlf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.sh text eol=lf
+
+# .NET source and config
+*.cs text diff=csharp eol=lf
+*.csx text diff=csharp eol=lf
+*.csproj text eol=lf
+*.props text eol=lf
+*.targets text eol=lf
+*.json text eol=lf
+*.xml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.7z binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.woff binary
+*.woff2 binary
