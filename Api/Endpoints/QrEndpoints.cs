@@ -1,13 +1,9 @@
 using System.Security.Claims;
-using System.Text.Json;
 using Api.Contracts.Common;
 using Api.Contracts.Qr;
 using Api.Contracts.Telegram;
-using Domain.Entities;
+using Application.Workflows.Qr;
 using FluentValidation;
-using Infrastructure.Persistence;
-using Infrastructure.Services;
-using Microsoft.EntityFrameworkCore;
 
 namespace Api.Endpoints;
 
@@ -22,8 +18,7 @@ internal static class QrEndpoints
         qrGroup.MapPost("", async (
             CreateQrRequest request,
             ClaimsPrincipal principal,
-            AppDbContext db,
-            IQrCodeService qrCodeService,
+            IQrWorkflow qrWorkflow,
             IValidator<CreateQrRequest> validator,
             CancellationToken ct) =>
         {
@@ -38,58 +33,30 @@ internal static class QrEndpoints
                 return Results.Unauthorized();
             }
 
-            var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, ct);
-            if (user is null)
-            {
-                return Results.Unauthorized();
-            }
+            var result = await qrWorkflow.CreateAsync(
+                userId,
+                new CreateQrWorkflowCommand(
+                    request.CheckInAt,
+                    request.CheckOutAt,
+                    request.GuestsCount,
+                    request.DoorPassword,
+                    request.DataType),
+                ct);
 
-            var now = DateTimeOffset.UtcNow;
-            var dataType = string.IsNullOrWhiteSpace(request.DataType)
-                ? "booking_access"
-                : request.DataType.Trim();
-
-            var payloadObject = new
+            return result.Status switch
             {
-                checkInAt = request.CheckInAt,
-                checkOutAt = request.CheckOutAt,
-                guestsCount = request.GuestsCount,
-                doorPassword = request.DoorPassword,
-                userId = user.Id,
-                phoneNumber = user.PhoneNumber,
-                dataType,
-                createdAt = now
+                CreateQrWorkflowStatus.UnauthorizedUser => Results.Unauthorized(),
+                CreateQrWorkflowStatus.Success when result.Data is not null => Results.Ok(new CreateQrResponse(
+                    result.Data.Id,
+                    result.Data.CheckInAt,
+                    result.Data.CheckOutAt,
+                    result.Data.GuestsCount,
+                    result.Data.DataType,
+                    result.Data.CreatedAt,
+                    result.Data.PayloadJson,
+                    result.Data.QrImageBase64)),
+                _ => Results.Problem(statusCode: StatusCodes.Status500InternalServerError)
             };
-
-            var payloadJson = JsonSerializer.Serialize(payloadObject);
-            var qrImageBase64 = qrCodeService.GeneratePngBase64(payloadJson);
-
-            var record = new QrCodeRecord
-            {
-                Id = Guid.NewGuid(),
-                UserId = user.Id,
-                CheckInAt = request.CheckInAt,
-                CheckOutAt = request.CheckOutAt,
-                GuestsCount = request.GuestsCount,
-                DoorPassword = request.DoorPassword.Trim(),
-                PayloadJson = payloadJson,
-                QrImageBase64 = qrImageBase64,
-                DataType = dataType,
-                CreatedAt = now
-            };
-
-            db.QrCodeRecords.Add(record);
-            await db.SaveChangesAsync(ct);
-
-            return Results.Ok(new CreateQrResponse(
-                record.Id,
-                record.CheckInAt,
-                record.CheckOutAt,
-                record.GuestsCount,
-                record.DataType,
-                record.CreatedAt,
-                record.PayloadJson,
-                record.QrImageBase64));
         })
             .WithName("CreateQr")
             .WithSummary("Generate and save QR")
@@ -100,7 +67,7 @@ internal static class QrEndpoints
 
         qrGroup.MapGet("", async (
             ClaimsPrincipal principal,
-            AppDbContext db,
+            IQrWorkflow qrWorkflow,
             int? skip,
             int? take,
             CancellationToken ct) =>
@@ -110,19 +77,9 @@ internal static class QrEndpoints
                 return Results.Unauthorized();
             }
 
-            var resolvedSkip = Math.Max(0, skip ?? 0);
-            var resolvedTake = Math.Clamp(take ?? 20, 1, 100);
+            var history = await qrWorkflow.GetHistoryAsync(userId, skip, take, ct);
 
-            var userRecordsQuery = db.QrCodeRecords
-                .AsNoTracking()
-                .Where(x => x.UserId == userId);
-
-            var total = await userRecordsQuery.CountAsync(ct);
-
-            var items = await userRecordsQuery
-                .OrderByDescending(x => x.CreatedAt)
-                .Skip(resolvedSkip)
-                .Take(resolvedTake)
+            var items = history.Items
                 .Select(x => new QrCodeListItemResponse(
                     x.Id,
                     x.CheckInAt,
@@ -130,9 +87,9 @@ internal static class QrEndpoints
                     x.GuestsCount,
                     x.DataType,
                     x.CreatedAt))
-                .ToListAsync(ct);
+                .ToList();
 
-            return Results.Ok(new QrCodeHistoryResponse(items, total, resolvedSkip, resolvedTake));
+            return Results.Ok(new QrCodeHistoryResponse(items, history.Total, history.Skip, history.Take));
         })
             .WithName("GetQrHistory")
             .WithSummary("Get QR history")
@@ -143,7 +100,7 @@ internal static class QrEndpoints
         qrGroup.MapGet("/{id:guid}", async (
             Guid id,
             ClaimsPrincipal principal,
-            AppDbContext db,
+            IQrWorkflow qrWorkflow,
             CancellationToken ct) =>
         {
             if (!EndpointUserContext.TryGetUserId(principal, out var userId))
@@ -151,29 +108,25 @@ internal static class QrEndpoints
                 return Results.Unauthorized();
             }
 
-            var record = await db.QrCodeRecords
-                .AsNoTracking()
-                .Where(x => x.Id == id && x.UserId == userId)
-                .Select(x => new QrCodeDetailsResponse(
-                    x.Id,
-                    x.CheckInAt,
-                    x.CheckOutAt,
-                    x.GuestsCount,
-                    x.DoorPassword,
-                    x.DataType,
-                    x.CreatedAt,
-                    x.PayloadJson,
-                    x.QrImageBase64))
-                .SingleOrDefaultAsync(ct);
+            var result = await qrWorkflow.GetByIdAsync(userId, id, ct);
 
-            if (record is null)
+            return result.Status switch
             {
-                return Results.NotFound(new ErrorResponse(
+                GetQrByIdWorkflowStatus.NotFound => Results.NotFound(new ErrorResponse(
                     "qr_not_found",
-                    "QR record not found."));
-            }
-
-            return Results.Ok(record);
+                    "QR record not found.")),
+                GetQrByIdWorkflowStatus.Success when result.Data is not null => Results.Ok(new QrCodeDetailsResponse(
+                    result.Data.Id,
+                    result.Data.CheckInAt,
+                    result.Data.CheckOutAt,
+                    result.Data.GuestsCount,
+                    result.Data.DoorPassword,
+                    result.Data.DataType,
+                    result.Data.CreatedAt,
+                    result.Data.PayloadJson,
+                    result.Data.QrImageBase64)),
+                _ => Results.Problem(statusCode: StatusCodes.Status500InternalServerError)
+            };
         })
             .WithName("GetQrById")
             .WithSummary("Get QR details by id")
@@ -185,8 +138,7 @@ internal static class QrEndpoints
         qrGroup.MapPost("/{id:guid}/send-telegram", async (
             Guid id,
             ClaimsPrincipal principal,
-            AppDbContext db,
-            ITelegramQrSender telegramQrSender,
+            IQrWorkflow qrWorkflow,
             CancellationToken ct) =>
         {
             if (!EndpointUserContext.TryGetUserId(principal, out var userId))
@@ -194,86 +146,50 @@ internal static class QrEndpoints
                 return Results.Unauthorized();
             }
 
-            var record = await db.QrCodeRecords
-                .AsNoTracking()
-                .FirstOrDefaultAsync(x => x.Id == id && x.UserId == userId, ct);
+            var result = await qrWorkflow.SendToTelegramAsync(userId, id, ct);
 
-            if (record is null)
+            return result.Status switch
             {
-                return Results.NotFound(new ErrorResponse(
+                SendQrToTelegramWorkflowStatus.QrNotFound => Results.NotFound(new ErrorResponse(
                     "qr_not_found",
-                    "QR record not found."));
-            }
-
-            var binding = await db.TelegramBindings
-                .AsNoTracking()
-                .FirstOrDefaultAsync(x => x.UserId == userId, ct);
-
-            if (binding is null)
-            {
-                return Results.BadRequest(new ErrorResponse(
+                    "QR record not found.")),
+                SendQrToTelegramWorkflowStatus.TelegramNotBound => Results.BadRequest(new ErrorResponse(
                     "telegram_not_bound",
-                    "Telegram chat is not bound for this user."));
-            }
-
-            var caption = $"QR access ({record.DataType}) | {record.CheckInAt:O} - {record.CheckOutAt:O}";
-
-            try
-            {
-                await telegramQrSender.SendQrCodeAsync(binding.ChatId, record.QrImageBase64, caption, ct);
-            }
-            catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.Configuration)
-            {
-                return Results.Problem(
+                    "Telegram chat is not bound for this user.")),
+                SendQrToTelegramWorkflowStatus.TelegramConfiguration => Results.Problem(
                     title: "Telegram is not configured",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status503ServiceUnavailable);
-            }
-            catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.InvalidChat)
-            {
-                return Results.BadRequest(new ErrorResponse("telegram_invalid_chat", ex.Message));
-            }
-            catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.Forbidden)
-            {
-                return Results.Problem(
+                    detail: result.ErrorMessage,
+                    statusCode: StatusCodes.Status503ServiceUnavailable),
+                SendQrToTelegramWorkflowStatus.TelegramInvalidChat => Results.BadRequest(new ErrorResponse(
+                    "telegram_invalid_chat",
+                    result.ErrorMessage ?? "Invalid Telegram chat or bot has no access to it.")),
+                SendQrToTelegramWorkflowStatus.TelegramForbidden => Results.Problem(
                     title: "Telegram access denied",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status403Forbidden);
-            }
-            catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.Timeout)
-            {
-                return Results.Problem(
+                    detail: result.ErrorMessage,
+                    statusCode: StatusCodes.Status403Forbidden),
+                SendQrToTelegramWorkflowStatus.TelegramTimeout => Results.Problem(
                     title: "Telegram timeout",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status504GatewayTimeout);
-            }
-            catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.Network)
-            {
-                return Results.Problem(
+                    detail: result.ErrorMessage,
+                    statusCode: StatusCodes.Status504GatewayTimeout),
+                SendQrToTelegramWorkflowStatus.TelegramNetwork => Results.Problem(
                     title: "Telegram network failure",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status503ServiceUnavailable);
-            }
-            catch (TelegramIntegrationException ex) when (ex.Error == TelegramIntegrationError.InvalidPayload)
-            {
-                return Results.Problem(
+                    detail: result.ErrorMessage,
+                    statusCode: StatusCodes.Status503ServiceUnavailable),
+                SendQrToTelegramWorkflowStatus.TelegramInvalidPayload => Results.Problem(
                     title: "Stored QR payload is invalid",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status500InternalServerError);
-            }
-            catch (TelegramIntegrationException ex)
-            {
-                return Results.Problem(
+                    detail: result.ErrorMessage,
+                    statusCode: StatusCodes.Status500InternalServerError),
+                SendQrToTelegramWorkflowStatus.TelegramRemoteApi => Results.Problem(
                     title: "Telegram API error",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status502BadGateway);
-            }
-
-            return Results.Ok(new SendQrToTelegramResponse(
-                record.Id,
-                binding.ChatId,
-                DateTimeOffset.UtcNow,
-                "sent"));
+                    detail: result.ErrorMessage,
+                    statusCode: StatusCodes.Status502BadGateway),
+                SendQrToTelegramWorkflowStatus.Success when result.Data is not null => Results.Ok(new SendQrToTelegramResponse(
+                    result.Data.QrId,
+                    result.Data.ChatId,
+                    result.Data.SentAtUtc,
+                    result.Data.Status)),
+                _ => Results.Problem(statusCode: StatusCodes.Status500InternalServerError)
+            };
         })
             .WithName("SendQrToTelegram")
             .WithSummary("Send QR to Telegram")

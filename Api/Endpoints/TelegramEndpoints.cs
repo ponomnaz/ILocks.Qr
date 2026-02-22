@@ -1,9 +1,7 @@
 using System.Security.Claims;
 using Api.Contracts.Common;
 using Api.Contracts.Telegram;
-using Domain.Entities;
-using Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
+using Application.Workflows.Telegram;
 
 namespace Api.Endpoints;
 
@@ -18,68 +16,32 @@ internal static class TelegramEndpoints
         telegramGroup.MapPost("/bind-chat", async (
             BindTelegramChatRequest request,
             ClaimsPrincipal principal,
-            AppDbContext db,
+            ITelegramWorkflow telegramWorkflow,
             CancellationToken ct) =>
         {
-            if (request.ChatId <= 0)
-            {
-                return Results.ValidationProblem(new Dictionary<string, string[]>
-                {
-                    ["chatId"] = ["ChatId must be greater than zero."]
-                });
-            }
-
             if (!EndpointUserContext.TryGetUserId(principal, out var userId))
             {
                 return Results.Unauthorized();
             }
 
-            var userExists = await db.Users.AnyAsync(x => x.Id == userId, ct);
-            if (!userExists)
+            var result = await telegramWorkflow.BindChatAsync(userId, request.ChatId, ct);
+
+            return result.Status switch
             {
-                return Results.Unauthorized();
-            }
-
-            var existingByChat = await db.TelegramBindings
-                .AsNoTracking()
-                .FirstOrDefaultAsync(x => x.ChatId == request.ChatId, ct);
-
-            if (existingByChat is not null && existingByChat.UserId != userId)
-            {
-                return Results.Conflict(new ErrorResponse(
-                    "telegram_chat_already_bound",
-                    "This Telegram chat is already linked to another user."));
-            }
-
-            var now = DateTimeOffset.UtcNow;
-
-            var binding = await db.TelegramBindings
-                .FirstOrDefaultAsync(x => x.UserId == userId, ct);
-
-            if (binding is null)
-            {
-                binding = new TelegramBinding
+                BindTelegramChatWorkflowStatus.InvalidChat => Results.ValidationProblem(new Dictionary<string, string[]>
                 {
-                    Id = Guid.NewGuid(),
-                    UserId = userId,
-                    ChatId = request.ChatId,
-                    CreatedAt = now
-                };
-
-                db.TelegramBindings.Add(binding);
-            }
-            else
-            {
-                binding.ChatId = request.ChatId;
-                binding.CreatedAt = now;
-            }
-
-            await db.SaveChangesAsync(ct);
-
-            return Results.Ok(new BindTelegramChatResponse(
-                binding.UserId,
-                binding.ChatId,
-                binding.CreatedAt));
+                    ["chatId"] = ["ChatId must be greater than zero."]
+                }),
+                BindTelegramChatWorkflowStatus.UnauthorizedUser => Results.Unauthorized(),
+                BindTelegramChatWorkflowStatus.ChatAlreadyBound => Results.Conflict(new ErrorResponse(
+                    "telegram_chat_already_bound",
+                    "This Telegram chat is already linked to another user.")),
+                BindTelegramChatWorkflowStatus.Success when result.Data is not null => Results.Ok(new BindTelegramChatResponse(
+                    result.Data.UserId,
+                    result.Data.ChatId,
+                    result.Data.BoundAtUtc)),
+                _ => Results.Problem(statusCode: StatusCodes.Status500InternalServerError)
+            };
         })
             .WithName("BindTelegramChat")
             .WithSummary("Bind Telegram chat")

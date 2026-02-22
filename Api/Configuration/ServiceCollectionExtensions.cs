@@ -1,8 +1,12 @@
 using System.Text;
 using Application.Security;
+using Application.Workflows.Auth;
+using Application.Workflows.Qr;
+using Application.Workflows.Telegram;
 using FluentValidation;
 using Infrastructure.Persistence;
 using Infrastructure.Services;
+using Infrastructure.Workflows;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -70,6 +74,9 @@ internal static class ServiceCollectionExtensions
         {
             options.UseNpgsql(settings.ConnectionString);
         });
+        services.AddScoped<IAuthWorkflow, AuthWorkflow>();
+        services.AddScoped<IQrWorkflow, QrWorkflow>();
+        services.AddScoped<ITelegramWorkflow, TelegramWorkflow>();
         services.AddSingleton<IOtpService, OtpService>();
         services.AddSingleton<IQrCodeService, QrCodeService>();
         services.AddSingleton<ITelegramQrSender, TelegramQrSender>();
